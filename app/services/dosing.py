@@ -5,12 +5,12 @@ from app.exceptions import NoDosingDataException
 logger = structlog.get_logger(__name__)
 
 AGE_GROUP_MAP: Dict[str, List[str]] = {
-    "neonate":    ["neonate"],
-    "infant":     ["infant"],
-    "pediatric":  ["pediatric", "children"],
-    "adolescent": ["adolescent"],
-    "adult":      ["adult"],
-    "geriatric":  ["geriatric"],
+    "neonate":    ["neonate", "any"],
+    "infant":     ["infant", "neonate", "any"],
+    "pediatric":  ["pediatric", "children", "any"],
+    "adolescent": ["adolescent", "adult", "any"],
+    "adult":      ["adult", "any"],
+    "geriatric":  ["geriatric", "adult", "any"],
     "any":        ["neonate", "infant", "pediatric", "children", "adolescent", "adult", "geriatric", "any"],
 }
 
@@ -48,10 +48,58 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
             best_formulation AS (
               SELECT DISTINCT ON (rxcui)
                 formulation_id,
-                rxcui
-              FROM candidate_formulations
+                rxcui,
+                best_dose_basis
+              FROM (
+                SELECT
+                  cf.formulation_id,
+                  cf.rxcui,
+                  cf.has_dailymed,
+                  cf.has_openfda,
+                  cf.has_drugbank,
+                  cf.has_rxnorm,
+                  cf.dosing_row_count,
+                  MIN(
+                    CASE COALESCE(dr.dose_basis, '')
+                      WHEN 'fixed'    THEN 1
+                      WHEN 'per_kg'   THEN 2
+                      WHEN 'per_m2'   THEN 3
+                      WHEN 'titrated' THEN 4
+                      ELSE                 5
+                    END
+                  ) AS dose_basis_priority,
+                  (array_agg(
+                    dr.dose_basis
+                    ORDER BY
+                      CASE COALESCE(dr.dose_basis, '')
+                        WHEN 'fixed'    THEN 1
+                        WHEN 'per_kg'   THEN 2
+                        WHEN 'per_m2'   THEN 3
+                        WHEN 'titrated' THEN 4
+                        ELSE                 5
+                      END ASC
+                  ))[1] AS best_dose_basis
+                FROM candidate_formulations cf
+                JOIN drugdb.dosing_regimen dr ON dr.formulation_id = cf.formulation_id
+                WHERE dr.age_group        = ANY($2::text[])
+                  AND dr.renal_function   = 'any'
+                  AND dr.hepatic_function = 'any'
+                  AND dr.pregnancy_status = 'any'
+                  AND dr.frequency        IS NOT NULL
+                  AND UPPER(COALESCE(dr.dose_amount, '')) != 'CONTRAINDICATED'
+                  AND (
+                    $2::text[] && ARRAY['pediatric','neonate','infant']
+                    OR dr.administration_notes NOT ILIKE '%pediatric%'
+                    OR dr.administration_notes IS NULL
+                  )
+                GROUP BY
+                  cf.formulation_id, cf.rxcui,
+                  cf.has_dailymed, cf.has_openfda, cf.has_drugbank, cf.has_rxnorm,
+                  cf.dosing_row_count
+              ) cf_ranked
               ORDER BY
                 rxcui,
+                dose_basis_priority ASC,
                 CASE
                   WHEN has_dailymed = true THEN 1
                   WHEN has_openfda  = true THEN 2
@@ -64,6 +112,7 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
             ),
             ranked AS (
               SELECT
+                bf.formulation_id,
                 dr.frequency,
                 dr.route,
                 dr.dose_amount,
@@ -95,11 +144,14 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
                 AND dr.renal_function   = 'any'
                 AND dr.hepatic_function = 'any'
                 AND dr.pregnancy_status = 'any'
-                AND dr.dose_basis       = 'fixed'
+                AND dr.dose_basis       IS NOT DISTINCT FROM bf.best_dose_basis
                 AND dr.frequency        IS NOT NULL
                 AND UPPER(COALESCE(dr.dose_amount, '')) != 'CONTRAINDICATED'
-                AND (dr.administration_notes NOT ILIKE '%pediatric%'
-                     OR dr.administration_notes IS NULL)
+                AND (
+                  $2::text[] && ARRAY['pediatric','neonate','infant']
+                  OR dr.administration_notes NOT ILIKE '%pediatric%'
+                  OR dr.administration_notes IS NULL
+                )
             )
             SELECT
               ib.brand_name,
@@ -108,7 +160,7 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
                 SELECT STRING_AGG(i.name, ' / ' ORDER BY i.name)
                 FROM drugdb.drug_ingredient_mapping dim
                 JOIN drugdb.ingredients i ON i.id = dim.ingredient_id
-                WHERE dim.formulation_id = bf.formulation_id
+                WHERE dim.formulation_id = r.formulation_id
               ) AS generic_name,
               r.frequency,
               r.route,
@@ -118,7 +170,6 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
               LOWER(r.indication) AS indication,
               r.administration_notes AS instructions
             FROM ranked r
-            CROSS JOIN best_formulation bf
             JOIN drugdb.indian_brand ib
               ON ib.drug_id_1mg = $1
               AND ib.match_combination NOT IN ('drugbank', 'us_unapproved')
@@ -179,10 +230,58 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
                 best_formulation AS (
                   SELECT DISTINCT ON (rxcui)
                     formulation_id,
-                    rxcui
-                  FROM candidate_formulations
+                    rxcui,
+                    best_dose_basis
+                  FROM (
+                    SELECT
+                      cf.formulation_id,
+                      cf.rxcui,
+                      cf.has_dailymed,
+                      cf.has_openfda,
+                      cf.has_drugbank,
+                      cf.has_rxnorm,
+                      cf.dosing_row_count,
+                      MIN(
+                        CASE COALESCE(dr.dose_basis, '')
+                          WHEN 'fixed'    THEN 1
+                          WHEN 'per_kg'   THEN 2
+                          WHEN 'per_m2'   THEN 3
+                          WHEN 'titrated' THEN 4
+                          ELSE                 5
+                        END
+                      ) AS dose_basis_priority,
+                      (array_agg(
+                        dr.dose_basis
+                        ORDER BY
+                          CASE COALESCE(dr.dose_basis, '')
+                            WHEN 'fixed'    THEN 1
+                            WHEN 'per_kg'   THEN 2
+                            WHEN 'per_m2'   THEN 3
+                            WHEN 'titrated' THEN 4
+                            ELSE                 5
+                          END ASC
+                      ))[1] AS best_dose_basis
+                    FROM candidate_formulations cf
+                    JOIN drugdb.dosing_regimen dr ON dr.formulation_id = cf.formulation_id
+                    WHERE dr.age_group        = ANY($2::text[])
+                      AND dr.renal_function   = 'any'
+                      AND dr.hepatic_function = 'any'
+                      AND dr.pregnancy_status = 'any'
+                      AND dr.frequency        IS NOT NULL
+                      AND UPPER(COALESCE(dr.dose_amount, '')) != 'CONTRAINDICATED'
+                      AND (
+                        $2::text[] && ARRAY['pediatric','neonate','infant']
+                        OR dr.administration_notes NOT ILIKE '%pediatric%'
+                        OR dr.administration_notes IS NULL
+                      )
+                    GROUP BY
+                      cf.formulation_id, cf.rxcui,
+                      cf.has_dailymed, cf.has_openfda, cf.has_drugbank, cf.has_rxnorm,
+                      cf.dosing_row_count
+                  ) cf_ranked
                   ORDER BY
                     rxcui,
+                    dose_basis_priority ASC,
                     CASE
                       WHEN has_dailymed = true THEN 1
                       WHEN has_openfda  = true THEN 2
@@ -195,6 +294,7 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
                 ),
                 ranked AS (
                   SELECT
+                    bf.formulation_id,
                     dr.frequency,
                     dr.route,
                     dr.dose_amount,
@@ -226,11 +326,14 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
                     AND dr.renal_function   = 'any'
                     AND dr.hepatic_function = 'any'
                     AND dr.pregnancy_status = 'any'
-                    AND dr.dose_basis       = 'fixed'
+                    AND dr.dose_basis       IS NOT DISTINCT FROM bf.best_dose_basis
                     AND dr.frequency        IS NOT NULL
                     AND UPPER(COALESCE(dr.dose_amount, '')) != 'CONTRAINDICATED'
-                    AND (dr.administration_notes NOT ILIKE '%pediatric%'
-                         OR dr.administration_notes IS NULL)
+                    AND (
+                      $2::text[] && ARRAY['pediatric','neonate','infant']
+                      OR dr.administration_notes NOT ILIKE '%pediatric%'
+                      OR dr.administration_notes IS NULL
+                    )
                 )
                 SELECT
                   ib.brand_name,
@@ -239,7 +342,7 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
                     SELECT STRING_AGG(i.name, ' / ' ORDER BY i.name)
                     FROM drugdb.drug_ingredient_mapping dim
                     JOIN drugdb.ingredients i ON i.id = dim.ingredient_id
-                    WHERE dim.formulation_id = bf.formulation_id
+                    WHERE dim.formulation_id = r.formulation_id
                   ) AS generic_name,
                   r.frequency,
                   r.route,
@@ -249,7 +352,6 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
                   LOWER(r.indication) AS indication,
                   r.administration_notes AS instructions
                 FROM ranked r
-                CROSS JOIN best_formulation bf
                 JOIN LATERAL (
                   SELECT brand_name, salt_composition
                   FROM drugdb.indian_brand
