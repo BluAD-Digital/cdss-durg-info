@@ -7,6 +7,7 @@ class MetaResponse(BaseModel):
     cached: bool
     response_time_ms: float
     product_count: Optional[int] = None
+    is_partial_match: bool = False
 
 
 class PopulationInfoData(BaseModel):

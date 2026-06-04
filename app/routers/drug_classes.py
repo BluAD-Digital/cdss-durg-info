@@ -56,5 +56,5 @@ async def drug_classes(drug_id_1mg: str, request: Request):
         drug_id_1mg=drug_id_1mg,
         generic_name=resolved.generic_name,
         data=data,
-        meta=MetaResponse(source="database", cached=cached_hit, response_time_ms=duration_ms),
+        meta=MetaResponse(source="database", cached=cached_hit, response_time_ms=duration_ms, is_partial_match=resolved.is_partial_match),
     )

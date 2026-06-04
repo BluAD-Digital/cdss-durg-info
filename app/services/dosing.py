@@ -191,24 +191,40 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
                   WHERE ib.drug_id_1mg = $1
                   LIMIT 1
                 ),
-                resolvable_rxcuis AS (
+                active_resolvable AS (
                   SELECT DISTINCT r.rxcui, dml.master_linkage_id
                   FROM salt_ingredients si
                   CROSS JOIN LATERAL unnest(si.rxcui) AS r(rxcui)
                   JOIN drugdb.ingredients i ON i.rxcui = r.rxcui
                   JOIN public."DrugMasterLinkage" dml ON dml.unii_ids @> ARRAY[i.unii::text]
-                  WHERE i.unii IS NOT NULL
+                  WHERE (i.type = 'active' OR i.type IS NULL)
+                    AND i.unii IS NOT NULL
                     AND array_length(dml.rxcui_ids, 1) = 1
                 ),
-                all_pass_check AS (
-                  SELECT 1
+                inactive_resolvable AS (
+                  SELECT DISTINCT ON (r.rxcui) r.rxcui, dml.master_linkage_id
                   FROM salt_ingredients si
-                  WHERE (SELECT COUNT(DISTINCT rxcui) FROM resolvable_rxcuis) = array_length(si.rxcui, 1)
+                  CROSS JOIN LATERAL unnest(si.rxcui) AS r(rxcui)
+                  JOIN drugdb.ingredients i ON i.rxcui = r.rxcui
+                  JOIN public."DrugMasterLinkage" dml ON dml.unii_ids @> ARRAY[i.unii::text]
+                  WHERE i.type = 'inactive'
+                    AND i.unii IS NOT NULL
+                  ORDER BY r.rxcui, array_length(dml.rxcui_ids, 1) DESC
+                ),
+                resolvable_rxcuis AS (
+                  SELECT rxcui, master_linkage_id FROM active_resolvable
+                  UNION
+                  SELECT rxcui, master_linkage_id FROM inactive_resolvable
+                ),
+                pass_counts AS (
+                  SELECT
+                    (SELECT COUNT(DISTINCT rxcui) FROM resolvable_rxcuis)   AS resolved,
+                    (SELECT array_length(rxcui, 1) FROM salt_ingredients)   AS total
                 ),
                 linkage AS (
                   SELECT DISTINCT master_linkage_id
                   FROM resolvable_rxcuis
-                  WHERE EXISTS (SELECT 1 FROM all_pass_check)
+                  WHERE (SELECT resolved >= 1 FROM pass_counts)
                 ),
                 candidate_formulations AS (
                   SELECT
@@ -350,7 +366,8 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
                   r.dose_unit,
                   r.duration,
                   LOWER(r.indication) AS indication,
-                  r.administration_notes AS instructions
+                  r.administration_notes AS instructions,
+                  (SELECT resolved < total AND resolved >= 1 FROM pass_counts) AS is_partial_match
                 FROM ranked r
                 JOIN LATERAL (
                   SELECT brand_name, salt_composition

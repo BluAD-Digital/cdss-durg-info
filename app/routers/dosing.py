@@ -56,10 +56,12 @@ async def dosing_regimen(
     if cached_hit:
         data = cached
         generic_name = data[0].get("generic_name") if isinstance(data, list) and data else None
+        is_partial_match = bool(data[0].get("is_partial_match", False)) if isinstance(data, list) and data else False
     else:
         try:
             data = await get_dosing(drug_id_1mg, age_group, pool)
             generic_name = data[0].get("generic_name") if data else None
+            is_partial_match = bool(data[0].get("is_partial_match", False)) if data else False
             await set_cached(cache_key, data, ttl=settings.CACHE_TTL)
         except NoDosingDataException as e:
             return JSONResponse(
@@ -96,5 +98,5 @@ async def dosing_regimen(
         drug_id_1mg=drug_id_1mg,
         generic_name=generic_name,
         data=data,
-        meta=MetaResponse(source="database", cached=cached_hit, response_time_ms=duration_ms),
+        meta=MetaResponse(source="database", cached=cached_hit, response_time_ms=duration_ms, is_partial_match=is_partial_match),
     )

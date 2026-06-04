@@ -53,7 +53,7 @@ async def drug_interactions(drug_id_1mg: str, request: Request):
     severity_counts = result.get("severity_counts", {})
     duration_ms = round((time.perf_counter() - start) * 1000, 2)
 
-    meta = MetaResponse(source="database", cached=cached_hit, response_time_ms=duration_ms)
+    meta = MetaResponse(source="database", cached=cached_hit, response_time_ms=duration_ms, is_partial_match=resolved.is_partial_match)
     meta_dict = meta.model_dump()
     meta_dict["severity_counts"] = severity_counts
 
@@ -146,5 +146,6 @@ async def check_interaction_between_drugs(
             "source": "database",
             "cached": cached_hit,
             "response_time_ms": duration_ms,
+            "is_partial_match": resolved1.is_partial_match or resolved2.is_partial_match,
         },
     }

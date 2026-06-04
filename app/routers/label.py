@@ -84,7 +84,7 @@ async def _label_endpoint(
         drug_id_1mg=drug_id_1mg,
         generic_name=resolved.generic_name,
         data=data,
-        meta=MetaResponse(source="database", cached=cached_hit, response_time_ms=duration_ms),
+        meta=MetaResponse(source="database", cached=cached_hit, response_time_ms=duration_ms, is_partial_match=resolved.is_partial_match),
     )
 
 
@@ -215,7 +215,7 @@ async def get_population_info(
         drug_id_1mg=drug_id_1mg,
         generic_name=resolved.generic_name,
         data=data,
-        meta=MetaResponse(source=source, cached=cached_hit, response_time_ms=duration_ms),
+        meta=MetaResponse(source=source, cached=cached_hit, response_time_ms=duration_ms, is_partial_match=resolved.is_partial_match),
     )
 
 
@@ -264,7 +264,7 @@ async def get_products(drug_id_1mg: str, request: Request):
         drug_id_1mg=drug_id_1mg,
         generic_name=resolved.generic_name,
         data=data,
-        meta=MetaResponse(source="dailymed", cached=cached_hit, response_time_ms=duration_ms, product_count=len(data)),
+        meta=MetaResponse(source="dailymed", cached=cached_hit, response_time_ms=duration_ms, product_count=len(data), is_partial_match=resolved.is_partial_match),
     )
 
 
@@ -307,5 +307,5 @@ async def get_ingredients(drug_id_1mg: str, request: Request):
         drug_id_1mg=drug_id_1mg,
         generic_name=resolved.generic_name,
         data=data,
-        meta=MetaResponse(source="dailymed", cached=cached_hit, response_time_ms=duration_ms, product_count=product_count),
+        meta=MetaResponse(source="dailymed", cached=cached_hit, response_time_ms=duration_ms, product_count=product_count, is_partial_match=resolved.is_partial_match),
     )

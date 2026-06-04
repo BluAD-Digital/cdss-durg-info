@@ -1,7 +1,7 @@
 from pydantic_settings import BaseSettings
 from pydantic import model_validator
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 
 class Settings(BaseSettings):
@@ -33,7 +33,7 @@ class Settings(BaseSettings):
         self.DB_PORT = db.port or 5432
         self.DB_NAME = (db.path or "").lstrip("/")
         self.DB_USER = db.username or ""
-        self.DB_PASSWORD = db.password or ""
+        self.DB_PASSWORD = unquote(db.password or "")
 
         r = urlparse(self.REDIS_URL)
         self.REDIS_HOST = r.hostname or "localhost"
