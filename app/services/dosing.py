@@ -121,6 +121,7 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
                 dr.duration,
                 dr.indication,
                 dr.administration_notes,
+                dr.food_timing,
                 ROW_NUMBER() OVER (
                   PARTITION BY
                     dr.frequency,
@@ -168,7 +169,8 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
               r.dose_unit,
               r.duration,
               LOWER(r.indication) AS indication,
-              r.administration_notes AS instructions
+              r.administration_notes AS instructions,
+              r.food_timing
             FROM ranked r
             JOIN drugdb.indian_brand ib
               ON ib.drug_id_1mg = $1
@@ -319,6 +321,7 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
                     dr.duration,
                     dr.indication,
                     dr.administration_notes,
+                    dr.food_timing,
                     ROW_NUMBER() OVER (
                       PARTITION BY
                         dr.frequency,
@@ -367,6 +370,7 @@ async def get_dosing(drug_id_1mg: str, age_group: str, pool) -> List[Dict[str, A
                   r.duration,
                   LOWER(r.indication) AS indication,
                   r.administration_notes AS instructions,
+                  r.food_timing,
                   (SELECT resolved < total AND resolved >= 1 FROM pass_counts) AS is_partial_match
                 FROM ranked r
                 JOIN LATERAL (
