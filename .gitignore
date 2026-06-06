@@ -3,4 +3,4 @@ logs/
 __pycache__/
 *.pyc
 .graphifyignore
-.graphify-out/
+graphify-out/
