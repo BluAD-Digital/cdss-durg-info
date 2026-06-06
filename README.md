@@ -1,6 +1,6 @@
 # cdss-drug-info
 
-Production-grade FastAPI backend serving drug information for Indian medical practitioners via 18 REST API endpoints. Built as the data layer for a Clinical Decision Support System (CDSS).
+Production-grade FastAPI backend serving drug information for Indian medical practitioners via 21 REST API endpoints. Built as the data layer for a Clinical Decision Support System (CDSS).
 
 ---
 
@@ -11,7 +11,7 @@ Production-grade FastAPI backend serving drug information for Indian medical pra
 3. [Low Level Architecture](#3-low-level-architecture)
 4. [Project Structure](#4-project-structure)
 5. [Database Statistics](#5-database-statistics)
-6. [All 18 Endpoints](#6-all-18-endpoints)
+6. [All 21 Endpoints](#6-all-21-endpoints)
 7. [SQL Queries Reference](#7-sql-queries-reference)
 8. [Cache Keys Reference](#8-cache-keys-reference)
 9. [Error Codes Reference](#9-error-codes-reference)
@@ -25,7 +25,7 @@ Production-grade FastAPI backend serving drug information for Indian medical pra
 
 ## 1. Project Overview
 
-**cdss-drug-info** is a production-grade FastAPI backend that exposes drug information for Indian medical practitioners through 18 REST API endpoints. The `/population-info` endpoint replaces the former `/geriatric-use` and `/pediatric-use` endpoints with a single age-aware endpoint.
+**cdss-drug-info** is a production-grade FastAPI backend that exposes drug information for Indian medical practitioners through 21 REST API endpoints. The `/population-info` endpoint replaces the former `/geriatric-use` and `/pediatric-use` endpoints with a single age-aware endpoint.
 
 ### Why Indian brand drugs?
 
@@ -34,8 +34,8 @@ Indian doctors prescribe drugs by **brand name**, not by generic name. A doctor 
 ### What does it serve?
 
 - Contraindications, warnings, mechanism of action, adverse reactions
-- Dosing regimens filtered by age group (neonate → geriatric)
-- Drug-drug interactions with severity levels
+- Dosing regimens filtered by patient age (auto-classified to neonate → geriatric), including food timing guidance
+- Drug-drug interactions with severity levels; pairwise and multi-drug interaction checking
 - Drug classifications (pharmacologic, therapeutic, mechanism class)
 - Patient information, product listings, food interactions
 - All data returned as structured JSON for CDSS frontend consumption
@@ -281,6 +281,7 @@ Maps 1mg.com brand IDs to RxNorm concepts.
 | `hepatic_function`    | Hepatic filter (default: any)                        |
 | `pregnancy_status`    | Pregnancy filter (default: any)                      |
 | `dose_basis`          | fixed / weight-based / BSA-based                     |
+| `food_timing`         | before_food / after_food / with_food / any / null    |
 
 ---
 
@@ -300,11 +301,20 @@ cdss-drug-info/
 │   └── error.log         — Error-only log, rotated daily, 90-day retention
 │
 ├── tests/
-│   ├── conftest.py       — Test fixtures: DB pool, test client, valid drug_id_1mg
-│   ├── test_label.py     — Tests for all 15 label endpoints
-│   ├── test_interactions.py — Tests for interactions endpoint
-│   ├── test_dosing.py    — Tests for dosing regimen endpoint
-│   └── test_resolver.py  — Tests for resolution chain
+│   ├── conftest.py             — Test fixtures: DB pool, test client, valid drug_id_1mg
+│   ├── test_label.py           — Tests for all 14 label endpoints
+│   ├── test_interactions.py    — Tests for interactions + check-interaction endpoints
+│   ├── test_dosing.py          — Tests for dosing regimen endpoint
+│   ├── test_resolver.py        — Tests for resolution chain
+│   ├── test_fallback_flows.py  — Tests for partial-match fallback resolution
+│   ├── test_text_formatter.py  — Tests for bullet-splitting utility
+│   ├── test_1000_drugs_benchmark.py — 1000-drug coverage benchmark
+│   │
+│   └── comprehensive/          — Extended test suite
+│       ├── test_all_endpoints.py   — All 21 endpoints × 10 test drugs
+│       ├── test_edge_cases.py      — Invalid IDs, auth failures, age validation
+│       ├── test_concurrency.py     — 100+ concurrent users
+│       └── test_performance.py     — p50/p95/p99 latency benchmarks
 │
 └── app/
     ├── config.py         — pydantic-settings, reads .env, validates all config vars
@@ -318,22 +328,25 @@ cdss-drug-info/
     │   └── timing.py     — X-Response-Time header, millisecond tracking
     │
     ├── models/
-    │   ├── requests.py   — DrugRequest pydantic model
+    │   ├── requests.py   — DrugRequest, MultiInteractionRequest pydantic models
     │   └── responses.py  — All response pydantic models for each endpoint
     │
     ├── routers/
-    │   ├── label.py      — 15 endpoints for JSONB field extraction
-    │   ├── interactions.py — Drug interaction endpoint
+    │   ├── label.py      — 14 label endpoints + /population-info for JSONB extraction
+    │   ├── interactions.py — /interactions, /check-interaction, POST /check-interactions
     │   ├── drug_classes.py — Drug classification endpoint
-    │   └── dosing.py     — Dosing regimen endpoint
+    │   └── dosing.py     — Dosing regimen endpoint (age float → age_group classification)
     │
-    └── services/
-        ├── resolver.py   — Core 3-step resolution chain
-        ├── cache_service.py — Redis cache helper with key builder
-        ├── label.py      — JSONB extraction functions for all 15 label fields
-        ├── interactions.py — 5-table join interaction query
-        ├── drug_classes.py — Drug class query from drugdb.drug
-        └── dosing.py     — Complex 5-CTE dosing regimen query
+    ├── services/
+    │   ├── resolver.py   — Core 3-step resolution chain with UNII fallback
+    │   ├── cache_service.py — Redis cache helper with key builder
+    │   ├── label.py      — JSONB extraction functions for all label fields
+    │   ├── interactions.py — 5-table join + pairwise check queries
+    │   ├── drug_classes.py — Drug class query from drugdb.drug
+    │   └── dosing.py     — Complex 5-CTE dosing regimen query (includes food_timing)
+    │
+    └── utils/
+        └── text_formatter.py — Splits long text into bullet arrays for frontend
 ```
 
 ---
@@ -357,7 +370,7 @@ The `combined_clean_jsonb` in `masterlinkage_unique` merges all 4 sources into a
 
 ---
 
-## 6. All 18 Endpoints
+## 6. All 21 Endpoints
 
 All endpoints require the header `X-API-Key: <api_key>`.
 
@@ -373,22 +386,26 @@ All endpoints return the same envelope:
     "source": "openfda",
     "cached": false,
     "response_time_ms": 45.2,
+    "is_partial_match": false,
     "product_count": null
   }
 }
 ```
+
+`is_partial_match` is `true` when the resolver fell back to UNII-based ingredient bridging and only some (not all) ingredients of a fixed-dose combination were resolved. Frontend can use this flag to show a "best-effort match" warning.
 
 All standard label endpoints (contraindications through food-interactions) return `data` with this structure:
 
 ```json
 {
   "text": "Full text content...",
+  "bullets": ["Sentence one.", "Sentence two."],
   "table": [{ "caption": "", "headers": [], "rows": [["cell"]] }],
   "subsections": [{ "section_title": "OVERDOSAGE", "content": "..." }]
 }
 ```
 
-Keys `table` and `subsections` are `null` when not present in the source data. `text` is `null` when no text exists for the drug.
+`bullets` is a pre-split array of the `text` field — convenient for frontend list rendering. `table` and `subsections` are `null` when not present in the source data. `text` is `null` when no text exists for the drug.
 
 ---
 
@@ -1134,7 +1151,145 @@ curl -H "X-API-Key: your-api-key" \
 
 ---
 
-### Endpoint 17: Drug Classes
+### Endpoint 17: Check Interaction Between Two Drugs
+
+```
+GET /api/v1/drug/{drug_id_1mg}/check-interaction/{other_drug_id}
+```
+
+**Description:** Checks for drug-drug interactions between exactly two specific drugs. Both drugs are resolved in parallel. The cache key is order-independent (`sort(id1, id2)`) so `drug A vs drug B` and `drug B vs drug A` share the same cache entry.
+
+**Auth:** `X-API-Key` required on both drug IDs.
+
+**Example request:**
+
+```bash
+curl -H "X-API-Key: your-api-key" \
+  "http://localhost:8000/api/v1/drug/1000006/check-interaction/1000037"
+```
+
+**Example response (interaction found):**
+
+```json
+{
+  "success": true,
+  "drug_1": { "drug_id_1mg": "1000006", "generic_name": "warfarin sodium" },
+  "drug_2": { "drug_id_1mg": "1000037", "generic_name": "aspirin" },
+  "has_interaction": true,
+  "highest_severity": "major",
+  "severity_summary": { "major": 1, "moderate": 0, "minor": 0 },
+  "data": [
+    {
+      "our_ingredient": "warfarin",
+      "interacting_ingredient": "aspirin",
+      "interacting_drug": "aspirin",
+      "severity": "major",
+      "mechanism": "Concurrent use increases risk of bleeding."
+    }
+  ],
+  "meta": {
+    "source": "database",
+    "cached": false,
+    "response_time_ms": 54.1,
+    "is_partial_match": false
+  }
+}
+```
+
+**Example response (no interaction):**
+
+```json
+{
+  "success": true,
+  "drug_1": { "drug_id_1mg": "1000006", "generic_name": "warfarin sodium" },
+  "drug_2": { "drug_id_1mg": "1000041", "generic_name": "atorvastatin" },
+  "has_interaction": false,
+  "highest_severity": null,
+  "severity_summary": { "major": 0, "moderate": 0, "minor": 0 },
+  "data": [],
+  "meta": { "source": "database", "cached": false, "response_time_ms": 38.2, "is_partial_match": false }
+}
+```
+
+---
+
+### Endpoint 18: Check Interactions Among N Drugs
+
+```
+POST /api/v1/drugs/check-interactions
+```
+
+**Description:** Checks all pairwise drug-drug interactions among N drugs (N ≥ 2) in a single call. Drugs are resolved in parallel; pairs are checked in parallel reusing the per-pair cache. Results are sorted by severity (major → moderate → minor → none).
+
+**Request body:**
+
+```json
+{ "drug_ids": ["1000006", "1000037", "1000041"] }
+```
+
+Minimum 2 drug IDs required — returns `HTTP 422` for a single ID.
+
+**Example request:**
+
+```bash
+curl -X POST -H "X-API-Key: your-api-key" \
+     -H "Content-Type: application/json" \
+     -d '{"drug_ids": ["1000006", "1000037", "1000041"]}' \
+     http://localhost:8000/api/v1/drugs/check-interactions
+```
+
+**Example response (3 drugs → 3 pairs):**
+
+```json
+{
+  "success": true,
+  "drugs": [
+    { "drug_id_1mg": "1000006", "generic_name": "warfarin sodium" },
+    { "drug_id_1mg": "1000037", "generic_name": "aspirin" },
+    { "drug_id_1mg": "1000041", "generic_name": "atorvastatin" }
+  ],
+  "pairs": [
+    {
+      "drug_1": { "drug_id_1mg": "1000006", "generic_name": "warfarin sodium" },
+      "drug_2": { "drug_id_1mg": "1000037", "generic_name": "aspirin" },
+      "has_interaction": true,
+      "highest_severity": "major",
+      "severity_summary": { "major": 1, "moderate": 0, "minor": 0 },
+      "interactions": [{ "our_ingredient": "warfarin", "interacting_ingredient": "aspirin", "severity": "major", "mechanism": "..." }]
+    },
+    {
+      "drug_1": { "drug_id_1mg": "1000006", "generic_name": "warfarin sodium" },
+      "drug_2": { "drug_id_1mg": "1000041", "generic_name": "atorvastatin" },
+      "has_interaction": false,
+      "highest_severity": null,
+      "severity_summary": { "major": 0, "moderate": 0, "minor": 0 },
+      "interactions": []
+    },
+    {
+      "drug_1": { "drug_id_1mg": "1000037", "generic_name": "aspirin" },
+      "drug_2": { "drug_id_1mg": "1000041", "generic_name": "atorvastatin" },
+      "has_interaction": false,
+      "highest_severity": null,
+      "severity_summary": { "major": 0, "moderate": 0, "minor": 0 },
+      "interactions": []
+    }
+  ],
+  "overall_has_interaction": true,
+  "overall_highest_severity": "major",
+  "meta": {
+    "source": "database",
+    "response_time_ms": 112.7,
+    "pair_count": 3,
+    "is_partial_match": false
+  }
+}
+```
+
+`pair_count` equals C(N, 2) — e.g. 3 drugs → 3 pairs, 4 drugs → 6 pairs.
+
+---
+
+### Endpoint 19: Drug Classes
 
 ```
 GET /api/v1/drug/{drug_id_1mg}/drug-classes
@@ -1169,42 +1324,58 @@ curl -H "X-API-Key: your-api-key" \
 
 ---
 
-### Endpoint 18: Dosing Regimen
+### Endpoint 20: Dosing Regimen
 
 ```
-GET /api/v1/drug/{drug_id_1mg}/dosing-regimen?age_group=adult
+GET /api/v1/drug/{drug_id_1mg}/dosing-regimen?age=<float>
 ```
 
-**Description:** Returns filtered dosing rows for the specified age group.
+**Description:** Returns filtered dosing rows for the patient's age. The backend classifies the numeric age into an age group automatically — the frontend just sends the patient's age in years.
 
 **Source tables:** `drugdb.dosing_regimen`, `drugdb.indian_brand`, `drugdb.drug`, `drugdb.drug_ingredient_mapping`, `drugdb.ingredients`
 
 **Query parameter:**
 
-| `age_group` | Population                         |
-|-------------|------------------------------------|
-| `neonate`   | 0–28 days                          |
-| `infant`    | 1 month – 2 years                  |
-| `pediatric` | 2–12 years                         |
-| `adolescent`| 12–18 years                        |
-| `adult`     | 18–65 years                        |
-| `geriatric` | 65+ years                          |
-| `any`       | All age groups                     |
+| Parameter | Type  | Required | Description |
+|-----------|-------|----------|-------------|
+| `age`     | float | Yes      | Patient age in years. Fractions allowed: `0.083` = 1 month, `0.5` = 6 months, `5` = 5 years. Must be ≥ 0. |
+
+**Age classification (done server-side):**
+
+| Age range (years) | Classified as |
+|-------------------|---------------|
+| < 0.077 (< ~4 weeks) | `neonate` |
+| 0.077 – < 1       | `infant`      |
+| 1 – < 12          | `pediatric`   |
+| 12 – < 18         | `adolescent`  |
+| 18 – < 65         | `adult`       |
+| ≥ 65              | `geriatric`   |
 
 **Uses a 5-CTE query:**
 ```
 salt_ingredients → candidate_formulations → best_formulation → ranked → final SELECT
 ```
 
-**Returns:** `brand_name`, `salt_composition`, `generic_name`, `frequency`, `route`, `dose_amount`, `dose_unit`, `duration`, `indication`, `instructions`
+**Returns per dosing row:** `brand_name`, `salt_composition`, `generic_name`, `frequency`, `route`, `dose_amount`, `dose_unit`, `duration`, `indication`, `instructions`, `food_timing`
+
+**`food_timing` values:** `before_food` / `after_food` / `with_food` / `any` / `null`
 
 **Example scale:** Clopidogrel adult → 9 dosing rows (QD oral route)
 
-**Example request:**
+**Example requests:**
 
 ```bash
+# Adult (age 35)
 curl -H "X-API-Key: your-api-key" \
-  "http://localhost:8000/api/v1/drug/1002775/dosing-regimen?age_group=adult"
+  "http://localhost:8000/api/v1/drug/1002775/dosing-regimen?age=35"
+
+# Pediatric (age 5 years)
+curl -H "X-API-Key: your-api-key" \
+  "http://localhost:8000/api/v1/drug/1002775/dosing-regimen?age=5"
+
+# Infant (6 months)
+curl -H "X-API-Key: your-api-key" \
+  "http://localhost:8000/api/v1/drug/1002775/dosing-regimen?age=0.5"
 ```
 
 **Example response:**
@@ -1214,23 +1385,22 @@ curl -H "X-API-Key: your-api-key" \
   "success": true,
   "drug_id_1mg": "1002775",
   "generic_name": "Clopidogrel bisulfate",
-  "data": {
-    "dosing": [
-      {
-        "brand_name": "Deplatt",
-        "salt_composition": "Clopidogrel (75mg)",
-        "generic_name": "clopidogrel",
-        "frequency": "QD",
-        "route": "oral",
-        "dose_amount": "75 mg",
-        "dose_unit": "mg",
-        "duration": "ongoing",
-        "indication": "reduction of atherosclerotic events",
-        "instructions": "Take with or without food"
-      }
-    ]
-  },
-  "meta": { "source": "drugdb", "cached": false, "response_time_ms": 87.3 }
+  "data": [
+    {
+      "brand_name": "Deplatt",
+      "salt_composition": "Clopidogrel (75mg)",
+      "generic_name": "clopidogrel",
+      "frequency": "QD",
+      "route": "oral",
+      "dose_amount": "75 mg",
+      "dose_unit": "mg",
+      "duration": "ongoing",
+      "indication": "reduction of atherosclerotic events",
+      "instructions": "Take with or without food",
+      "food_timing": "any"
+    }
+  ],
+  "meta": { "source": "database", "cached": false, "response_time_ms": 87.3, "is_partial_match": false }
 }
 ```
 
@@ -1238,6 +1408,7 @@ curl -H "X-API-Key: your-api-key" \
 
 ```json
 { "success": false, "error_code": "NO_DOSING_DATA", "message": "No dosing data found for drug_id_1mg: 1002775, age_group: neonate" }
+{ "success": false, "error_code": "VALIDATION_ERROR", "message": "age must be a non-negative number" }
 ```
 
 ---
@@ -1384,6 +1555,7 @@ ranked AS (
         dr.duration,
         dr.indication,
         dr.administration_notes,
+        dr.food_timing,
         ROW_NUMBER() OVER (
             PARTITION BY
                 dr.frequency,
@@ -1428,7 +1600,8 @@ SELECT
     r.dose_unit,
     r.duration,
     LOWER(r.indication) AS indication,
-    r.administration_notes AS instructions
+    r.administration_notes AS instructions,
+    r.food_timing
 FROM ranked r
 CROSS JOIN best_formulation bf
 JOIN drugdb.indian_brand ib
@@ -1440,19 +1613,18 @@ ORDER BY r.frequency, r.dose_value
 
 Parameters:
 - `$1 = drug_id_1mg`
-- `$2 = age_group[]` (e.g. `['adult', 'any']` — always includes `'any'` alongside the specified group)
+- `$2 = age_group[]` — derived server-side from the `age` float query param (always includes `'any'` alongside the resolved group)
 
-**Age group mapping:**
+**Age float → age_group → query array mapping:**
 
-| Input        | Query array passed as `$2`             |
-|--------------|----------------------------------------|
-| `neonate`    | `['neonate', 'any']`                   |
-| `infant`     | `['infant', 'any']`                    |
-| `pediatric`  | `['pediatric', 'any']`                 |
-| `adolescent` | `['adolescent', 'any']`                |
-| `adult`      | `['adult', 'any']`                     |
-| `geriatric`  | `['geriatric', 'adult', 'any']`        |
-| `any`        | `['any']`                              |
+| `age` (years)   | Resolved `age_group` | Query array passed as `$2`      |
+|-----------------|----------------------|---------------------------------|
+| < 0.077         | `neonate`            | `['neonate', 'any']`            |
+| 0.077 – < 1     | `infant`             | `['infant', 'any']`             |
+| 1 – < 12        | `pediatric`          | `['pediatric', 'any']`          |
+| 12 – < 18       | `adolescent`         | `['adolescent', 'any']`         |
+| 18 – < 65       | `adult`              | `['adult', 'any']`              |
+| ≥ 65            | `geriatric`          | `['geriatric', 'adult', 'any']` |
 
 ---
 
@@ -1480,9 +1652,10 @@ All TTLs are **86,400 seconds (24 hours)**.
 | `label:products:{master_linkage_id}`             | /products                   |
 | `label:food_interactions:{master_linkage_id}`    | /food-interactions          |
 | `label:ingredients:{master_linkage_id}`          | /ingredients                |
-| `interactions:{formulation_id}`                  | /interactions               |
-| `drug_classes:{formulation_id}`                  | /drug-classes               |
-| `dosing:{drug_id_1mg}:{age_group}`               | /dosing-regimen             |
+| `interactions:{formulation_id}`                          | /interactions                        |
+| `check_interaction:{fid_a}:{fid_b}` (sorted IDs)        | /check-interaction, /check-interactions |
+| `drug_classes:{formulation_id}`                          | /drug-classes                        |
+| `dosing:{drug_id_1mg}:{age_group}`                       | /dosing-regimen (keyed by derived age_group, not raw age) |
 
 ---
 
@@ -1493,10 +1666,11 @@ All TTLs are **86,400 seconds (24 hours)**.
 | `DRUG_NOT_FOUND` | 404         | `drug_id_1mg` not found in `drugdb.indian_brand` table       |
 | `NO_FORMULATION` | 404         | `rxcui` from `indian_brand` not matched in `drugdb.drug`     |
 | `NO_LABEL_DATA`  | 404         | `master_linkage_id` not found in `drugdb.masterlinkage_unique` |
-| `NO_DOSING_DATA` | 404         | No dosing rows for this drug + age_group combination         |
-| `INVALID_AGE`    | 422         | `age` param is outside the 0–120 range                       |
-| `DB_ERROR`       | 500         | Database connection failure or query error                   |
-| `CACHE_ERROR`    | 500         | Redis failure — non-fatal, system falls back to DB           |
+| `NO_DOSING_DATA`   | 404         | No dosing rows for this drug + age_group combination           |
+| `INVALID_AGE`      | 422         | `age` param is outside the 0–120 range (population-info)       |
+| `VALIDATION_ERROR` | 422         | `age` is negative (dosing-regimen) or fewer than 2 drug IDs    |
+| `DB_ERROR`         | 500         | Database connection failure or query error                     |
+| `CACHE_ERROR`      | 500         | Redis failure — non-fatal, system falls back to DB             |
 
 ---
 
@@ -1598,12 +1772,26 @@ pytest tests/test_label.py -v
 pytest tests/test_interactions.py -v
 pytest tests/test_dosing.py -v
 pytest tests/test_resolver.py -v
+pytest tests/test_fallback_flows.py -v
+pytest tests/test_text_formatter.py -v
 ```
+
+### Run Comprehensive Suite
+
+```bash
+pytest tests/comprehensive/ -v
+```
+
+The comprehensive suite covers:
+- All 21 endpoints × 10 test drugs (5 single-ingredient + 5 FDC)
+- Edge cases: invalid drug IDs, auth failures, negative age, single-drug POST body
+- Concurrency: 100+ simultaneous requests, data isolation assertions
+- Performance: p50/p95/p99 latency benchmarks per endpoint
 
 ### Test Results
 
 ```
-69 passed, 3 warnings
+136 passed, 3 warnings
 ```
 
 ---
@@ -1682,21 +1870,35 @@ curl -H "X-API-Key: your-api-key" \
 curl -H "X-API-Key: your-api-key" \
   http://localhost:8000/api/v1/drug/1002775/ingredients
 
-# Drug-drug interactions
+# All drug-drug interactions (single drug)
 curl -H "X-API-Key: your-api-key" \
   http://localhost:8000/api/v1/drug/1002775/interactions
+
+# Check interaction between two specific drugs
+curl -H "X-API-Key: your-api-key" \
+  "http://localhost:8000/api/v1/drug/1000006/check-interaction/1000037"
+
+# Check all pairwise interactions among N drugs
+curl -X POST -H "X-API-Key: your-api-key" \
+     -H "Content-Type: application/json" \
+     -d '{"drug_ids": ["1000006", "1000037", "1000041"]}' \
+     http://localhost:8000/api/v1/drugs/check-interactions
 
 # Drug classes
 curl -H "X-API-Key: your-api-key" \
   http://localhost:8000/api/v1/drug/1002775/drug-classes
 
-# Dosing regimen — adult
+# Dosing regimen — adult (age 35)
 curl -H "X-API-Key: your-api-key" \
-  "http://localhost:8000/api/v1/drug/1002775/dosing-regimen?age_group=adult"
+  "http://localhost:8000/api/v1/drug/1002775/dosing-regimen?age=35"
 
-# Dosing regimen — pediatric
+# Dosing regimen — pediatric (age 5)
 curl -H "X-API-Key: your-api-key" \
-  "http://localhost:8000/api/v1/drug/1002775/dosing-regimen?age_group=pediatric"
+  "http://localhost:8000/api/v1/drug/1002775/dosing-regimen?age=5"
+
+# Dosing regimen — infant (6 months)
+curl -H "X-API-Key: your-api-key" \
+  "http://localhost:8000/api/v1/drug/1002775/dosing-regimen?age=0.5"
 ```
 
 ---
@@ -1725,14 +1927,31 @@ The backend maps `age` to a `population_category` automatically:
 - 18–64 → `adult` (returns null data — no special guidance)
 - 65–120 → `geriatric` (returns geriatric use data)
 
-### For dosing regimen:
+### For dosing regimen
 
 | Item         | Value                                                                         |
 |--------------|-------------------------------------------------------------------------------|
 | Path param   | `drug_id_1mg`                                                                 |
-| Query param  | `age` — float, patient age in years (frontend sends numeric age)              |
+| Query param  | `age` — float, patient age in years (e.g. `35`, `5`, `0.5` for 6 months)    |
 | Header       | `X-API-Key: <api_key>`                                                        |
 | Body         | None                                                                          |
+
+The backend classifies `age` to an `age_group` automatically. Frontend never sends `age_group` directly.
+
+### For check-interaction (two drugs)
+
+| Item         | Value                                                    |
+|--------------|----------------------------------------------------------|
+| Path params  | `drug_id_1mg` (first drug), `other_drug_id` (second)    |
+| Header       | `X-API-Key: <api_key>`                                   |
+| Body         | None                                                     |
+
+### For check-interactions (N drugs, POST)
+
+| Item         | Value                                                    |
+|--------------|----------------------------------------------------------|
+| Header       | `X-API-Key: <api_key>`, `Content-Type: application/json` |
+| Body         | `{"drug_ids": ["id1", "id2", ...]}` — minimum 2 IDs    |
 
 ### Standard success response structure:
 
